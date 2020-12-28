@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <script>
+        // promise 先同步处理then、catch函数，再异步处理executor,接着通过resolve、reject触发then、catch的参数。
+        function Defer(executor) {
+            if (!(this instanceof Defer)) {
+                throw 'Defer is a constructor and should be called width "new" keyword';
+            }
+
+            if (typeof executor !== 'function') {
+                throw 'Defer params must be a function';
+            }
+
+            this.thenCache = [];//{resolve:,reject:}
+            this.errorHandle = null;
+            this.status = 'pendding';
+            this.value = null;
+            this.rejectReason = null;
+            var self = this;
+            setTimeout(function () {
+                try {
+                    executor.call(self, self.resolve.bind(self), self.reject.bind(self));//传递resolve，reject方法
+                } catch (e) {
+                    self.reject(e);
+                }
+            }, 0);
+            return this;
+        }
+
+        Defer.prototype.resolve = function (value) {
+            this.status = 'resolved';
+            this.value = value;
+            this.triggerThen();
+        };
+        Defer.prototype.reject = function (reason) {
+            this.status = 'rejected';
+            this.rejectReason = reason;
+            this.triggerThen();
+        };
+        Defer.prototype.then = function (resolve, reject) {
+            var todo = { resolve: resolve, reject: reject };
+            this.thenCache.push(todo);
+            return this;
+        };
+        Defer.prototype.triggerThen = function () {
+            var current = this.thenCache.shift();
+            var res = null;
+
+            if (!current && this.status === 'resolved') {//成功解析并读取完then cache
+                return this;
+            } else if (!current && this.status === 'rejected') {//解析失败并读取完then cache，直接调用errorHandle
+                if (this.errorHandle) {
+                    this.value = this.errorHandle.call(undefined, this.rejectReason);
+                    this.status = 'resolved';
+                }
+                return this;
+            };
+
+            if (this.status === 'resolved') {
+                res = current.resolve;
+            } else if (this.status === 'rejected') {
+                res = current.reject;
+            }
+
+            if (typeof res === 'function') {
+                try {
+                    this.value = res.call(undefined, this.value || this.rejectReason);//重置promise的value
+                    this.status = 'resolved';
+                    this.triggerThen();//继续执行then链
+                } catch (e) {
+                    this.status = 'rejected';//异常，则promise为reject
+                    this.rejectReason = e;
+                    return this.triggerThen();//触发then链
+                }
+            } else {//不是函数则忽略
+                this.triggerThen();
+            }
+        };
+        Defer.prototype.catch = function (fn) {
+            if (typeof fn === 'function') {
+                this.errorHandle = fn;
+            }
+        };
+
+        Defer.all = function (arrP) {
+            let list = []
+            let len = 0
+            let hasErr = false
+            return new Defer((resolve, reject) => {
+                for (let i = 0; i < arrP.length; i++) {
+                    arrP[i].then(data => {
+                        list[i] = data
+                        len++
+                        len === arrP.length && resolve(list)
+                    }, error => {
+                        !hasErr && reject(error)
+                        hasErr = true
+                    })
+                }
+            })
+        }
+        Defer.race = function (arrP) {
+            let hasValue = false
+            let hasError = false
+            return new Defer((resolve, reject) => {
+                for (let i = 0; i < arrP.length; i++) {
+                    arrP[i].then(data => {
+                        !hasValue && !hasError && resolve(data)
+                        hasValue = true
+                    }, error => {
+                        !hasValue && !hasError && reject(error)
+                        hasError = true
+                    })
+                }
+            })
+        }
+
+        Defer.allSettled = function (values) {
+            function isPromise(x) {
+                if ((typeof x === 'object' && x != null) || typeof x === 'function') {
+                    if (typeof x.then == 'function') {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return new Defer((resolve, reject) => {
+                let arr = [];
+                let times = 0;
+                function collectResult(val, key, obj) {
+                    arr[key] = obj;
+                    if (++times === values.length) {
+                        return resolve(arr);
+                    }
+                }
+                // 循环每一项拿到返回结果
+                values.forEach((element, index) => {
+                    if (element && isPromise(element)) {
+                        element.then(y => {
+                            let obj = {
+                                status: 'fulfilled',
+                                value: y,
+                            }
+                            collectResult(y, index, obj)
+                        }, (err) => {
+                            let obj = {
+                                status: "rejected",
+                                reason: err
+                            }
+                            collectResult(err, index, obj)
+                        })
+                    } else {
+                        let obj = {
+                            status: 'fulfilled',
+                            value: value,
+                        }
+                        collectResult(value, index, obj)
+                    }
+                });
+
+            })
+        }
+
+        Defer.any = function (values) {
+            const num = values.length;
+            const rejectedList = new Array(num);
+            let rejectedNum = 0;
+            return new Defer((resolve, reject) => {
+                values.forEach((el, i) => {
+                    Defer.resolve(el).then(
+                        resolve(el)
+                    ).catch(err => {
+                        rejectedList[index] = err;
+                        if (++rejectedNum === num) {
+                            reject(rejectedList);
+                        }
+                    })
+                })
+            })
+        }
+        Defer.prototype.finally=function(cb){
+            return new Defer((resolve,reject)=>{
+                this.then((result)=>{
+                    cb();
+                    resolve(result); 
+                },(reason)=>{
+                    cb();
+                    reject(reason);
+                })
+            })
+        }
+        const pErr = new Defer((resolve, reject) => {
+            reject("总是失败");
+        });
+
+        const pSlow = new Defer((resolve, reject) => {
+            setTimeout(resolve, 500, "最终完成");
+        });
+
+        const pFast = new Defer((resolve, reject) => {
+            setTimeout(resolve, 100, "很快完成");
+        });
+        pSlow.finally(()=>{
+            console.log('befor process');
+        }).then(()=>{
+            console.log('sdsdsdsd');
+        }).finally(()=>{
+            console.log('after');
+        })
+        Promise.any([pErr, pSlow, pFast]).then((value) => {
+            console.log(value);
+            // pFast fulfils first
+        })
+
+
+
+
+
+    </script>
+</head>
+
+<body>
+    promise
+</body>
+
+</html>
